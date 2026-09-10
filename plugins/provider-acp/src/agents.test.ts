@@ -167,6 +167,73 @@ describe("customAcpAgentDefinition", () => {
     expect(definition.supportsManualCompaction).toBe(true);
     expect(definition.fork).toBe("none");
   });
+
+  it("defaults to the generic glyph and honors icon and iconTint", () => {
+    const [plain, branded, replaced] = [
+      parseCustomAcpAgents({
+        entries: [{ id: "amp", displayName: "Amp", command: "amp" }],
+        reservedProviderIds: reserved,
+      }).agents[0],
+      parseCustomAcpAgents({
+        entries: [
+          {
+            id: "amp",
+            displayName: "Amp",
+            command: "amp",
+            icon: "amp",
+            iconTint: { light: "#111111", dark: "#EEEEEE" },
+          },
+        ],
+        reservedProviderIds: reserved,
+      }).agents[0],
+      parseCustomAcpAgents({
+        entries: [
+          { id: "amp", displayName: "Amp", command: "amp", icon: "other/amp" },
+        ],
+        reservedProviderIds: reserved,
+      }).agents[0],
+    ];
+    if (!plain || !branded || !replaced)
+      throw new Error("expected the agents to parse");
+
+    expect(customAcpAgentDefinition(plain).icon).toBe("Toolbox");
+    expect(customAcpAgentDefinition(plain).iconTint).toBeUndefined();
+
+    const brandedDefinition = customAcpAgentDefinition(branded);
+    expect(brandedDefinition.icon).toBe("provider-acp/amp");
+    expect(brandedDefinition.iconTint).toEqual({
+      light: "#111111",
+      dark: "#EEEEEE",
+    });
+
+    expect(customAcpAgentDefinition(replaced).icon).toBe("other/amp");
+  });
+
+  it("keeps the replaced agent's icon unless the entry overrides it", () => {
+    const [agent] = parseCustomAcpAgents({
+      entries: [{ id: "amp", displayName: "Amp", command: "amp" }],
+      reservedProviderIds: reserved,
+    }).agents;
+    if (agent === undefined) throw new Error("expected the agent to parse");
+    const shipped = {
+      ...customAcpAgentDefinition(agent),
+      icon: "provider-acp/amp",
+      iconTint: { light: "#000000", dark: "#FFFFFF" },
+    };
+
+    const inherited = customAcpAgentDefinition(agent, shipped);
+    expect(inherited.icon).toBe("provider-acp/amp");
+    expect(inherited.iconTint).toEqual({
+      light: "#000000",
+      dark: "#FFFFFF",
+    });
+
+    const overridden = customAcpAgentDefinition(
+      { ...agent, icon: "custom-amp" },
+      shipped,
+    );
+    expect(overridden.icon).toBe("provider-acp/custom-amp");
+  });
 });
 
 describe("acpProviderDeclaration", () => {

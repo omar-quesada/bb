@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PluginProviderReasoningLevel } from "@get-bb/plugin-sdk";
 import { experimental_acpLaunchSpecSchema } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import type { AcpLaunchSpec } from "@get-bb/plugin-sdk/provider-bridge/acp";
+import { declaredIcon } from "./known-agents.js";
 import type { AcpNativeRootsResolver } from "./native-roots/resolver.js";
 
 export const ACP_FAMILY = "acp";
@@ -52,12 +53,20 @@ export const customAcpAgentSchema = z
     nativeReasoning: launchSpecFields.nativeReasoning,
     nativeSkillRoots: launchSpecFields.nativeSkillRoots,
     permissionCli: launchSpecFields.permissionCli,
+    icon: z.string().min(1).optional(),
+    iconTint: z
+      .object({ light: z.string().min(1), dark: z.string().min(1) })
+      .optional(),
     supportsManualCompaction: z.boolean().default(false),
   })
   .strict();
 export type CustomAcpAgent = z.infer<typeof customAcpAgentSchema>;
 
 const CUSTOM_AGENT_GLYPH = "Toolbox";
+
+function resolveCustomAgentIcon(icon: string): string {
+  return icon.includes("/") ? icon : declaredIcon(icon);
+}
 
 export function customAcpAgentDefinition(
   agent: CustomAcpAgent,
@@ -68,7 +77,13 @@ export function customAcpAgentDefinition(
   return {
     id: formatCustomAcpProviderId(agent.id),
     displayName: agent.displayName,
-    icon: CUSTOM_AGENT_GLYPH,
+    icon:
+      agent.icon === undefined
+        ? (shipped?.icon ?? CUSTOM_AGENT_GLYPH)
+        : resolveCustomAgentIcon(agent.icon),
+    ...(agent.iconTint === undefined
+      ? (shipped?.iconTint === undefined ? {} : { iconTint: shipped.iconTint })
+      : { iconTint: agent.iconTint }),
     launch: {
       displayName: agent.displayName,
       command: agent.command,

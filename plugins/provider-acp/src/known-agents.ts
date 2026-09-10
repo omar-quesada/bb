@@ -7,7 +7,7 @@ import { resolveOpenCodeNativeRoots } from "./native-roots/opencode.js";
 
 const PLUGIN_ID = "provider-acp";
 
-function declaredIcon(name: string): string {
+export function declaredIcon(name: string): string {
   return `${PLUGIN_ID}/${name}`;
 }
 

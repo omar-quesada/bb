@@ -415,8 +415,16 @@ entry is a path or `{"path": ..., "recursive": true, "ancestors": true}` for
 an agent that nests skills or reads them from every ancestor directory),
 `permissionCli` (permission-mode launch flags), `supportsManualCompaction`
 (only if the agent accepts an explicit compaction request — bb hides
-`/compact` otherwise), and `dialect` (the vendor side channels bb reads for
-the agent: `cursor`, `opencode`, `omp`, or `grok`).
+`/compact` otherwise), `dialect` (the vendor side channels bb reads for
+the agent: `cursor`, `opencode`, `omp`, or `grok`), `icon` (a bare name
+resolves to an icon this plugin ships, such as `hermes-agent`; a
+`plugin/name` reference uses another plugin's declared icon), and `iconTint`
+(`{"light": ..., "dark": ...}` for glyphs that need a brand color). An entry
+that replaces a shipped agent keeps that agent's icon and tint unless it
+sets its own. The app renders provider logos as a mask silhouette filled
+with the tint (or the theme's text color), so an icon SVG must be a single
+flat glyph on a transparent background — fill colors, gradients, and
+background rects in the artwork are discarded.
 
 The change applies immediately: the plugin re-registers its providers when the
 setting changes, with no restart and no `config refresh`.
@@ -430,11 +438,9 @@ Before ACP agents were plugin-owned, custom agents lived in `customAcpAgents`
 in `~/.bb/config.json`. bb still **reads** that array so an existing agent keeps
 working, logs a deprecation warning for each one, and never writes to it.
 Support ends in 0.41 — move each entry into the `customAgents` setting above.
-The two shapes are identical except that the setting has no `logo` field: a
-plugin-registered provider's icon is a host glyph or an asset the plugin ships,
-so a configured agent shows the generic tool glyph, and bb drops the field when
-it reads the old array. A setting entry wins over a config entry with the same
-`id`.
+The two shapes are identical except for the old array's `logo` field, which bb
+drops when it reads it; use the setting's `icon` field instead. A setting entry
+wins over a config entry with the same `id`.
 
 ## Custom Models
 
