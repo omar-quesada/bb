@@ -218,6 +218,7 @@ const faults = {
   unauthorizedApi: false,
   redeemOwner: null as "different" | "missing" | null,
   dropSendResponse: false,
+  slowResponseMs: null as number | null,
 };
 const counters = {
   redeems: 0,
@@ -229,6 +230,7 @@ const counters = {
   unauthenticatedUpgrades: 0,
   injectedApi401s: 0,
   droppedSendResponses: 0,
+  slowedResponses: 0,
 };
 
 function now(): number {
@@ -510,6 +512,13 @@ function handleControl(
     faults.dropSendResponse = true;
     return json(res, 200, { ok: true });
   }
+  if (pathname === "/__stub/slow-next-response") {
+    const query = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const parsed = Number.parseInt(query.get("ms") ?? "", 10);
+    faults.slowResponseMs =
+      Number.isInteger(parsed) && parsed > 0 ? parsed : 5_000;
+    return json(res, 200, { ok: true, delayMs: faults.slowResponseMs });
+  }
   if (pathname === "/__stub/expire-session") {
     const expired = expireSessions();
     const closed = closeLiveSockets();
@@ -534,6 +543,7 @@ function handleControl(
     faults.unauthorizedApi = false;
     faults.redeemOwner = null;
     faults.dropSendResponse = false;
+    faults.slowResponseMs = null;
     process.stderr.write(`connect-stub: reset (closed ${closed} socket(s))\n`);
     return json(res, 200, { ok: true, closed });
   }
@@ -558,7 +568,10 @@ function proxyRequest(
     req.method === "POST" &&
     /^\/api\/v1\/threads\/[^/]+\/send\/?$/u.test(url.pathname);
   if (dropResponse) faults.dropSendResponse = false;
+  const slowResponseMs = faults.slowResponseMs;
+  if (slowResponseMs !== null) faults.slowResponseMs = null;
   counters.proxiedRequests += 1;
+  const dispatch = (): void => {
   const upstream = http.request(
     {
       host: upstreamHost,
@@ -586,6 +599,13 @@ function proxyRequest(
     res.end("bb connect: server offline\n");
   });
   req.pipe(upstream);
+  };
+  if (slowResponseMs !== null) {
+    counters.slowedResponses += 1;
+    setTimeout(dispatch, slowResponseMs);
+  } else {
+    dispatch();
+  }
 }
 
 async function handleRequest(
