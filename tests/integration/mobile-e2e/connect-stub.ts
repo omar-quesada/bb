@@ -214,6 +214,12 @@ interface Session {
 const machines = new Map<string, Machine>();
 const sessions = new Map<string, Session>();
 const liveSockets = new Set<Duplex>();
+const faults = {
+  unauthorizedApi: false,
+  redeemOwner: null as "different" | "missing" | null,
+  dropSendResponse: false,
+  slowResponseMs: null as number | null,
+};
 const counters = {
   redeems: 0,
   desktopSessions: 0,
@@ -222,6 +228,9 @@ const counters = {
   proxiedUpgrades: 0,
   unauthenticatedRequests: 0,
   unauthenticatedUpgrades: 0,
+  injectedApi401s: 0,
+  droppedSendResponses: 0,
+  slowedResponses: 0,
 };
 
 function now(): number {
@@ -316,12 +325,12 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+function isApiPath(pathname: string): boolean {
+  return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
+}
+
 function isMachinePath(pathname: string): boolean {
-  return (
-    pathname.startsWith("/internal") ||
-    pathname === "/api/v1" ||
-    pathname.startsWith("/api/v1/")
-  );
+  return pathname.startsWith("/internal") || isApiPath(pathname);
 }
 
 function headerValue(value: string | string[] | undefined): string | null {
@@ -388,11 +397,23 @@ async function handleRedeemMachine(
   process.stderr.write(
     `connect-stub: redeemed ${code} → machine ${machine.id}\n`,
   );
+  const owner = faults.redeemOwner;
+  faults.redeemOwner = null;
   return json(res, 200, {
     credential: machine.credential,
     machineId: machine.id,
-    handle,
-    serverUrl,
+    handle:
+      owner === "missing"
+        ? null
+        : owner === "different"
+          ? OTHER_HANDLE
+          : handle,
+    serverUrl:
+      owner === "missing"
+        ? null
+        : owner === "different"
+          ? otherServerUrl
+          : serverUrl,
   });
 }
 
@@ -469,11 +490,35 @@ function handleControl(
         invalidatedAt: session.invalidatedAt,
       })),
       liveSockets: liveSockets.size,
+      faults,
       counters,
     });
   }
   if (req.method !== "POST")
     return json(res, 405, { error: "method_not_allowed" });
+  if (pathname === "/__stub/next-api-401") {
+    faults.unauthorizedApi = true;
+    return json(res, 200, { ok: true });
+  }
+  if (pathname === "/__stub/next-redeem-different-owner") {
+    faults.redeemOwner = "different";
+    return json(res, 200, { ok: true });
+  }
+  if (pathname === "/__stub/next-redeem-missing-owner") {
+    faults.redeemOwner = "missing";
+    return json(res, 200, { ok: true });
+  }
+  if (pathname === "/__stub/drop-next-send-response") {
+    faults.dropSendResponse = true;
+    return json(res, 200, { ok: true });
+  }
+  if (pathname === "/__stub/slow-next-response") {
+    const query = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const parsed = Number.parseInt(query.get("ms") ?? "", 10);
+    faults.slowResponseMs =
+      Number.isInteger(parsed) && parsed > 0 ? parsed : 5_000;
+    return json(res, 200, { ok: true, delayMs: faults.slowResponseMs });
+  }
   if (pathname === "/__stub/expire-session") {
     const expired = expireSessions();
     const closed = closeLiveSockets();
@@ -495,6 +540,10 @@ function handleControl(
     const closed = closeLiveSockets();
     machines.clear();
     sessions.clear();
+    faults.unauthorizedApi = false;
+    faults.redeemOwner = null;
+    faults.dropSendResponse = false;
+    faults.slowResponseMs = null;
     process.stderr.write(`connect-stub: reset (closed ${closed} socket(s))\n`);
     return json(res, 200, { ok: true, closed });
   }
@@ -504,10 +553,25 @@ function handleControl(
 function proxyRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  url: URL,
   auth: "session" | "machine",
   machineId: string | null,
 ): void {
+  if (faults.unauthorizedApi && isApiPath(url.pathname)) {
+    faults.unauthorizedApi = false;
+    counters.injectedApi401s += 1;
+    res.writeHead(401, { "content-type": "text/html; charset=utf-8" });
+    return void res.end(signInPage(url.host, url.toString()));
+  }
+  const dropResponse =
+    faults.dropSendResponse &&
+    req.method === "POST" &&
+    /^\/api\/v1\/threads\/[^/]+\/send\/?$/u.test(url.pathname);
+  if (dropResponse) faults.dropSendResponse = false;
+  const slowResponseMs = faults.slowResponseMs;
+  if (slowResponseMs !== null) faults.slowResponseMs = null;
   counters.proxiedRequests += 1;
+  const dispatch = (): void => {
   const upstream = http.request(
     {
       host: upstreamHost,
@@ -517,6 +581,12 @@ function proxyRequest(
       headers: upstreamHeaders(req, auth, machineId),
     },
     (upstreamRes) => {
+      if (dropResponse) {
+        counters.droppedSendResponses += 1;
+        upstreamRes.resume();
+        res.destroy();
+        return;
+      }
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
       upstreamRes.pipe(res);
     },
@@ -529,6 +599,13 @@ function proxyRequest(
     res.end("bb connect: server offline\n");
   });
   req.pipe(upstream);
+  };
+  if (slowResponseMs !== null) {
+    counters.slowedResponses += 1;
+    setTimeout(dispatch, slowResponseMs);
+  } else {
+    dispatch();
+  }
 }
 
 async function handleRequest(
@@ -560,7 +637,7 @@ async function handleRequest(
       res.writeHead(403, { "content-type": "text/plain" });
       return void res.end("bb connect: machine not authorized\n");
     }
-    return proxyRequest(req, res, "machine", machine.id);
+    return proxyRequest(req, res, url, "machine", machine.id);
   }
   if (pathname.startsWith("/internal")) {
     res.writeHead(403, { "content-type": "text/plain" });
@@ -579,7 +656,7 @@ async function handleRequest(
     res.writeHead(401, { "content-type": "text/html; charset=utf-8" });
     return void res.end(signInPage(url.host, url.toString()));
   }
-  return proxyRequest(req, res, "session", null);
+  return proxyRequest(req, res, url, "session", null);
 }
 
 function handleUpgrade(
